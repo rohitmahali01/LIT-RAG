@@ -211,7 +211,7 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
             sparse_vector_payload = {'indices': sparse_response[0]['sparse_indices'], 'values': sparse_response[0]['sparse_values']}
            
             query_response = await run_in_threadpool(
-                pinecone_index.query, namespace=namespace, top_k=50, vector=dense_embedding,
+                pinecone_index.query, namespace=namespace, top_k=100, vector=dense_embedding,
                 sparse_vector=sparse_vector_payload, include_metadata=True
             )
            
@@ -227,7 +227,7 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
 
             rerank_response = await run_in_threadpool(
                 pc.inference.rerank, model=RERANK_MODEL, query=query,
-                documents=retrieved_docs[:20], top_n=10, return_documents=True
+                documents=retrieved_docs[:30], top_n=10, return_documents=True
             )
             reranked_docs_text = [result.document.text for result in rerank_response.data]
 
@@ -354,3 +354,4 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+
