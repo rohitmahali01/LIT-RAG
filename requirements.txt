@@ -1,0 +1,19 @@
+# --- Core FastAPI Framework ---
+fastapi
+uvicorn[standard]
+
+# --- Pinecone Client & Reranker ---
+pinecone
+
+# --- Google Gemini SDK ---
+google-generativeai
+
+# --- Document Processing ---
+pymupdf
+python-dotenv
+aiofiles
+httpx
+
+# --- Utility & Security ---
+pydantic
+python-multipart
