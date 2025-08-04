@@ -120,7 +120,7 @@ def run_pymupdf_extraction(filename: str) -> str:
         print(f"An error occurred during multiprocessing text extraction: {e}")
         return ""
 
-def recursive_character_split(text: str, max_length: int = 3000, overlap: int = 50) -> List[str]:
+def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 50) -> List[str]:
     if not text: return []
     chunks = []
     current_chunk_start = 0
