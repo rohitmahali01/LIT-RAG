@@ -120,7 +120,7 @@ def run_pymupdf_extraction(filename: str) -> str:
         print(f"An error occurred during multiprocessing text extraction: {e}")
         return ""
 
-def recursive_character_split(text: str, max_length: int = 5000, overlap: int = 70) -> List[str]:
+def recursive_character_split(text: str, max_length: int = 5000, overlap: int = 20) -> List[str]:
     if not text: return []
     chunks = []
     current_chunk_start = 0
@@ -354,4 +354,5 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+
 
