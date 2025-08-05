@@ -232,7 +232,7 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
             reranked_docs_text = [result.document.text for result in rerank_response.data]
 
             context = "\n\n---\n\n".join(reranked_docs_text)
-            prompt = f"You are an AI assistant tasked with explaining policy documents. Your response must be factual, clear, and easy to understand, with a supportive tone.Analyze the user's 'QUESTION' and formulate an answer using *exclusively* the provided 'CONTEXT'. If the topic is complex, feel free to use bullet points to structure the information for clarity. Under no circumstances should you use outside knowledge. If the context is insufficient, please state that the document does not provide the necessary details.\n\nCONTEXT:\n{context}\n\nQUESTION:\n{query}\n\nANSWER:"
+            prompt = f"You are an AI assistant explaining policy documents. Use only the provided CONTEXT; do not draw on outside knowledge. Be factual, clear and supportive. Format your ANSWER neatly—use bullet points when necessary. If CONTEXT is insufficient, say so.\n\nCONTEXT:\n{context}\n\nQUESTION:\n{query}\n\nANSWER:"
             generation_response = await models["generation_model"].generate_content_async(prompt)
             
             return generation_response.text.strip()
@@ -354,6 +354,7 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+
 
 
 
