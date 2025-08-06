@@ -309,45 +309,27 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
             reranked_docs_text = [result.document.text for result in rerank_response.data]
 
             context = "\n\n---\n\n".join(reranked_docs_text)
-            prompt = f"""You are a retrieval-augmented generation (RAG) assistant.
+            prompt = f"""You are an answer generation model with strict retrieval-bound constraints.
 
-Input:
-- context: text from source documents  
-- question: a natural-language question  
+INSTRUCTIONS:
+- You MUST answer strictly and solely from the CONTEXT provided.
+- If the answer is not directly present in the CONTEXT, respond with:  
+  Information not available in the provided context.
+- You are PROHIBITED from:
+  - Using prior training knowledge or public information.
+  - Making inferences or assumptions.
+  - Changing or summarizing numbers, names, or facts.
+- The answer must mirror the document's wording where applicable, but may be made more readable using bullet points or warm phrasing.
 
-Your job:
-- Use ONLY the context to answer the question.  
-- If the answer isn’t in the context, say exactly this:  
-  Information not available in the provided context.  
-- Return a friendly, helpful answer in plain text.  
-- Use warm, human language — like you're explaining it to a curious friend.  
-- You may use bullet points or short lists to make things clearer, but keep the tone conversational.  
-- Do not add any extra info or rely on outside knowledge — just stick to the given context.  
-
-Example:  
-Context:  
-> “According to the Remote Work Policy, employees may telecommute up to two days per week, provided they obtain manager approval in advance and maintain core business-hour availability.”
-
-Question:  
-> “Under the Remote Work Policy, what conditions must an employee meet to telecommute?”
-
-Answer:  
-Hey there! Here’s what the policy says:  
-- You can work from home up to two days each week.  
-- You’ll need to get your manager’s approval first.  
-- Make sure you’re available during core business hours.
-
-Hope that helps!
-
----
-
+STRUCTURE:
 CONTEXT:
 {context}
 
 QUESTION:
 {query}
 
-ANSWER:"""
+ANSWER:
+AFTER your answer, add a “SOURCE CHECK” block listing the exact sentence(s) you used from the context."""
             generation_response = await models["generation_model"].generate_content_async(prompt)
             
             return generation_response.text.strip()
