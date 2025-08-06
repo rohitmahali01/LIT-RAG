@@ -1,7 +1,10 @@
-# main.py (Version 8.4.0 - Auto-Adjusting Cores)
+# main.py (Version 9.0.0 - Production Architecture)
 #
-# This version dynamically detects available CPU cores for parallel processing,
-# making it suitable for cloud deployments like Render.
+# This version implements the final and most robust architecture by delegating
+# the entire multiprocessing PDF parsing task to an isolated, sandboxed
+# process. This completely resolves the underlying conflict between gRPC
+# threads in the main application and the use of multiprocessing, ensuring
+# stability and correctness even under heavy load in a multi-worker environment.
 
 import os
 import re
@@ -18,8 +21,8 @@ from dotenv import load_dotenv
 from urllib.parse import urlparse
 import mimetypes
 
+import multiprocessing as mp
 import pymupdf
-from multiprocessing import Pool, cpu_count
 
 from fastapi import FastAPI, Depends, HTTPException, status, Security
 from fastapi.concurrency import run_in_threadpool
@@ -29,16 +32,29 @@ from typing import List, Dict, Any, Generator, Optional
 
 from pinecone import Pinecone
 from pinecone.exceptions import NotFoundException
+from filelock import FileLock, Timeout
+
+# --- Fork-Safety Configuration ---
+# Set the start method to 'spawn' to ensure clean child processes.
+# This is critical for preventing conflicts with libraries like gRPC.
+try:
+    if mp.get_start_method(allow_none=True) != 'spawn':
+        mp.set_start_method("spawn", force=True)
+        print("Set multiprocessing start method to 'spawn' for gRPC and fork safety.")
+except RuntimeError:
+    pass
 
 # --- Configuration & Initialization ---
 load_dotenv()
-# --- MODIFIED: Removed static core count for dynamic adjustment ---
 
 app = FastAPI(
     title="LIT RAG with Gemini, PyMuPDF, and Cohere Reranker (Auto-Scaling)",
     description="Processes documents on-demand with a parallelized PyMuPDF parser that auto-adjusts to available CPU cores.",
-    version="8.4.0"
+    version="9.0.0"
 )
+
+lock_path = os.path.join(tempfile.gettempdir(), "rag_pipeline.lock")
+global_lock = FileLock(lock_path)
 
 # Global objects
 models: Dict[str, Any] = {}
@@ -56,8 +72,9 @@ RERANK_MODEL = "cohere-rerank-3.5"
 @app.on_event("startup")
 async def startup_event():
     """Initialize service connections and models."""
-    print("Server starting up...")
-    print("Using Pinecone's Cohere Reranker API for document reranking.")
+    print(f"[{os.getpid()}] Server worker starting up...")
+    print(f"[{os.getpid()}] Using multiprocessing start method: {mp.get_start_method()}")
+    print(f"[{os.getpid()}] Using Pinecone's Cohere Reranker API for document reranking.")
 
     if not os.getenv("GOOGLE_API_KEY"):
         raise ValueError("GOOGLE_API_KEY environment variable not found.")
@@ -75,11 +92,12 @@ async def startup_event():
         pc.create_index(name=index_name, dimension=DENSE_DIMENSION, metric="dotproduct", spec={"serverless": {"cloud": "aws", "region": "us-east-1"}})
     pinecone_index = pc.Index(index_name)
 
-    print("All components are live. Server is ready. ✅")
+    print(f"[{os.getpid()}] All components are live. Server is ready. ✅")
 
-# --- Parsing and Chunking Helpers ---
+# --- MODIFIED: Isolated PDF Parsing Logic ---
 
 def extract_text_from_pages(vector: tuple) -> str:
+    """This is the lowest-level worker function, it processes a subset of pages."""
     process_idx, total_cpus, filename = vector
     page_text_snippets = []
     try:
@@ -95,30 +113,73 @@ def extract_text_from_pages(vector: tuple) -> str:
                 page_text_snippets.append(page.get_text("text"))
                 page_text_snippets.append("\n\n---\n\n")
             except Exception as e:
-                print(f"Process {process_idx}: Failed to process page {page_num} - {e}")
+                print(f"Sub-process {os.getpid()}: Failed to process page {page_num} - {e}")
         doc.close()
     except Exception as e:
-        print(f"Process {process_idx}: Failed to open '{filename}' - {e}")
+        print(f"Sub-process {os.getpid()}: Failed to open '{filename}' - {e}")
     return "".join(page_text_snippets)
 
-def run_pymupdf_extraction(filename: str) -> str:
+def pymupdf_worker(filename: str, queue: mp.Queue):
     """
-    Synchronous wrapper for multiprocessing text extraction.
-    Dynamically uses the available CPU cores for best performance.
+    This function runs in a completely separate process. It is designed to be a
+    target for mp.Process. It creates its OWN Pool, extracts text, and puts
+    the result in a queue. It has no knowledge of gRPC or the main web server.
     """
     try:
-        # --- MODIFIED: Dynamically determine process count ---
-        # This allows the app to adapt to the resources of the deployment environment (e.g., Render).
-        num_processes = cpu_count() or 2 # Fallback to 2 if detection fails
-        print(f"[{os.getpid()}] Starting PyMuPDF extraction with a pool of {num_processes} processes (auto-detected).")
-        
+        print(f"[Isolated Worker {os.getpid()}] Starting PDF processing.")
+        num_processes = mp.cpu_count() or 2
         vectors = [(i, num_processes, filename) for i in range(num_processes)]
-        with Pool(processes=num_processes) as pool:
+        
+        with mp.Pool(processes=num_processes) as pool:
             results = pool.map(extract_text_from_pages, vectors)
-        return "".join(results)
+        
+        full_text = "".join(results)
+        if not full_text:
+            raise ValueError("Extraction resulted in empty text.")
+        queue.put(full_text)
+        print(f"[Isolated Worker {os.getpid()}] PDF processing successful.")
     except Exception as e:
-        print(f"An error occurred during multiprocessing text extraction: {e}")
+        print(f"[Isolated Worker {os.getpid()}] CRITICAL FAILURE during PDF processing: {e}")
+        queue.put(e)
+
+async def run_pymupdf_extraction(filename: str) -> str:
+    """
+    Launches the PyMuPDF extraction in a dedicated, isolated process to avoid
+    conflicts with the main application's gRPC threads.
+    """
+    ctx = mp.get_context()
+    q = ctx.Queue()
+    
+    process = ctx.Process(target=pymupdf_worker, args=(filename, q))
+    
+    def run_and_wait():
+        process.start()
+        process.join(timeout=180) # 3-minute timeout for the entire parsing job
+        if process.is_alive():
+            print(f"[Parent {os.getpid()}] PyMuPDF process timed out, terminating.")
+            process.terminate()
+            process.join()
+            return "TIMEOUT"
+        if process.exitcode != 0:
+            print(f"[Parent {os.getpid()}] PyMuPDF process exited with non-zero code: {process.exitcode}")
+            return "PROCESS_ERROR"
+
+    # Run the blocking process management in a thread pool to not block the event loop.
+    status = await run_in_threadpool(run_and_wait)
+    if status in ["TIMEOUT", "PROCESS_ERROR"]:
         return ""
+
+    if q.empty():
+        print(f"[Parent {os.getpid()}] PyMuPDF worker queue is empty after process finished. This indicates an early failure.")
+        return ""
+        
+    result = q.get()
+    if isinstance(result, Exception):
+        print(f"[Parent {os.getpid()}] Received an exception from the PyMuPDF worker: {result}")
+        return ""
+        
+    return result
+
 
 def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 50) -> List[str]:
     if not text: return []
@@ -149,17 +210,16 @@ def generate_url_hash(url: str) -> str:
 async def cleanup_namespace(namespace: str) -> bool:
     try:
         await run_in_threadpool(pinecone_index.delete, delete_all=True, namespace=namespace)
-        print(f"[CLEANUP] Successfully deleted existing namespace: {namespace}")
+        print(f"[{namespace}] Successfully deleted existing namespace.")
         return True
     except NotFoundException:
-        print(f"[CLEANUP] Namespace {namespace} did not exist. No action needed.")
+        print(f"[{namespace}] Namespace did not exist. No action needed.")
         return True
     except Exception as e:
-        print(f"[CLEANUP] An unexpected error occurred while deleting namespace {namespace}: {e}")
+        print(f"[{namespace}] An unexpected error occurred while deleting namespace {namespace}: {e}")
         return False
 
 async def wait_for_index_readiness(namespace: str, expected_chunks: int, max_wait: int = 120) -> bool:
-    """Waits for the Pinecone index to be ready by checking the vector count."""
     print(f"[{namespace}] Waiting for index to be ready with at least {expected_chunks} vectors...")
     for attempt in range(max_wait):
         try:
@@ -182,7 +242,7 @@ async def wait_for_index_readiness(namespace: str, expected_chunks: int, max_wai
             print(f"[{namespace}] Error during readiness check: {e}. Retrying...")
             await asyncio.sleep(1)
     
-    print(f"[{namespace}] WARNING: Index readiness timeout after {max_wait} seconds. The index may not be fully populated.")
+    print(f"[{namespace}] CRITICAL: Index readiness timeout after {max_wait} seconds.")
     return False
 
 # --- Security & API Models ---
@@ -200,7 +260,6 @@ class SubmissionResponse(BaseModel):
 
 # --- Core Processing Functions ---
 async def process_single_query(query: str, namespace: str, max_retries: int = 3) -> str:
-    """Processes a query with retry logic for enhanced robustness."""
     for attempt in range(max_retries):
         try:
             dense_response, sparse_response = await asyncio.gather(
@@ -247,11 +306,12 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
                 return "An internal error occurred while answering this question."
     return "Failed to process query after multiple retries."
 
-# --- Optimized Ingestion Function ---
 async def process_and_index_document(document_url: str, namespace: str) -> bool:
     """Processes and indexes a document with throttling and readiness verification."""
     temp_file_path = None
     try:
+        await cleanup_namespace(namespace)
+
         print(f"[{namespace}] Downloading document...")
         async with httpx.AsyncClient() as client:
             response = await client.get(document_url, follow_redirects=True, timeout=120.0)
@@ -268,10 +328,10 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
         async with aiofiles.open(temp_file_path, "wb") as f:
             await f.write(response.content)
 
-        print(f"[{namespace}] Parsing document with PyMuPDF...")
-        full_text_content = await run_in_threadpool(run_pymupdf_extraction, temp_file_path)
+        print(f"[{namespace}] Delegating parsing to isolated process...")
+        full_text_content = await run_pymupdf_extraction(temp_file_path)
         if not full_text_content:
-            print(f"[{namespace}] Failed to extract any text.")
+            print(f"[{namespace}] Failed to extract any text from the document.")
             return False
             
         document_chunks = recursive_character_split(full_text_content)
@@ -288,8 +348,7 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
                     run_in_threadpool(pc.inference.embed, model=SPARSE_MODEL, inputs=chunk_batch, parameters={"input_type": "passage"})
                 )
                 vectors_to_upsert = [{
-                    "id": f"chunk-{batch_start_index + j}",
-                    "values": dense_response[j]['values'],
+                    "id": f"chunk-{batch_start_index + j}", "values": dense_response[j]['values'],
                     "sparse_values": {'indices': sparse_response[j]['sparse_indices'], 'values': sparse_response[j]['sparse_values']},
                     "metadata": {'text': chunk}
                 } for j, chunk in enumerate(chunk_batch)]
@@ -306,7 +365,7 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
         task_results = await asyncio.gather(*pipeline_tasks)
        
         if not all(task_results):
-            print(f"[{namespace}] One or more ingestion pipelines failed. Cleaning up partial data.")
+            print(f"[{namespace}] One or more ingestion pipelines failed. Cleaning up.")
             await cleanup_namespace(namespace)
             return False
         
@@ -314,7 +373,9 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
         
         is_ready = await wait_for_index_readiness(namespace, len(document_chunks))
         if not is_ready:
-            print(f"[{namespace}] Warning: Proceeding without full index readiness confirmation.")
+            print(f"[{namespace}] Index readiness check failed. Aborting and cleaning up.")
+            await cleanup_namespace(namespace)
+            return False
         
         return True
        
@@ -329,40 +390,39 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
 # --- Main API Endpoint ---
 @app.post("/api/v1/hackrx/run", response_model=SubmissionResponse, dependencies=[Depends(verify_token)])
 async def run_submission(request: SubmissionRequest):
-    """Implements the stateless hybrid RAG pipeline."""
     url_hash = generate_url_hash(request.documents)
     namespace = f"doc-{url_hash}"
-   
+    
     try:
-        print(f"[{namespace}] Ensuring a clean slate by deleting existing namespace data...")
-        await cleanup_namespace(namespace)
+        await run_in_threadpool(global_lock.acquire, timeout=300)
+        print(f"[{namespace}] Global lock acquired by process {os.getpid()}.")
 
-        print(f"[{namespace}] Starting document processing and indexing...")
-        processing_successful = await process_and_index_document(request.documents, namespace)
-        if not processing_successful:
-            raise HTTPException(status_code=500, detail="Failed to process and index the document.")
-        
-        print(f"[{namespace}] Processing {len(request.questions)} questions concurrently...")
-        query_tasks = [process_single_query(query, namespace) for query in request.questions]
-        all_answers = await asyncio.gather(*query_tasks)
-       
-        print(f"[{namespace}] All questions processed successfully!")
-        return SubmissionResponse(answers=all_answers)
+        try:
+            print(f"[{namespace}] Starting document processing and indexing...")
+            processing_successful = await process_and_index_document(request.documents, namespace)
+            if not processing_successful:
+                raise HTTPException(status_code=500, detail="Failed to process and index the document. Check logs for details.")
+            
+            print(f"[{namespace}] Processing {len(request.questions)} questions concurrently...")
+            query_tasks = [process_single_query(query, namespace) for query in request.questions]
+            all_answers = await asyncio.gather(*query_tasks)
+           
+            print(f"[{namespace}] All questions processed successfully!")
+            return SubmissionResponse(answers=all_answers)
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"An unexpected error occurred in run_submission: {e}")
-        raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"An unexpected error occurred in the critical section of run_submission: {e}")
+            raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
 
-
-
-
-
-
-
-
-
-
-
-
+    except Timeout:
+        print(f"[{namespace}] Could not acquire global lock, another process is holding it.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The service is currently processing another document. Please try again."
+        )
+    finally:
+        if global_lock.is_locked:
+            global_lock.release()
+            print(f"[{namespace}] Global lock released by process {os.getpid()}.")
