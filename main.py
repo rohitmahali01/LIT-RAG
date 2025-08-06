@@ -1,8 +1,8 @@
-# main.py (Version 8.4.1 - gRPC Fork-Safety Fix)
+# main.py (Version 8.4.0 - Auto-Adjusting Cores)
 #
 # This version dynamically detects available CPU cores for parallel processing,
 # making it suitable for cloud deployments like Render.
-# --- FIX: Added 'multiprocessing as mp' to explicitly change the process start method.
+
 import os
 import re
 import uuid
@@ -19,9 +19,7 @@ from urllib.parse import urlparse
 import mimetypes
 
 import pymupdf
-# --- MODIFIED: Imported the full multiprocessing module ---
-import multiprocessing as mp
-from multiprocessing import cpu_count
+from multiprocessing import Pool, cpu_count
 
 from fastapi import FastAPI, Depends, HTTPException, status, Security
 from fastapi.concurrency import run_in_threadpool
@@ -39,7 +37,7 @@ load_dotenv()
 app = FastAPI(
     title="LIT RAG with Gemini, PyMuPDF, and Cohere Reranker (Auto-Scaling)",
     description="Processes documents on-demand with a parallelized PyMuPDF parser that auto-adjusts to available CPU cores.",
-    version="8.4.1" # Version incremented for the fix
+    version="8.4.0"
 )
 
 # Global objects
@@ -115,10 +113,7 @@ def run_pymupdf_extraction(filename: str) -> str:
         print(f"[{os.getpid()}] Starting PyMuPDF extraction with a pool of {num_processes} processes (auto-detected).")
         
         vectors = [(i, num_processes, filename) for i in range(num_processes)]
-        # --- FIX: Use get_context("spawn") to create the pool. ---
-        # This prevents child processes from inheriting the parent's gRPC/SSL state,
-        # which was causing the data corruption errors.
-        with mp.get_context("spawn").Pool(processes=num_processes) as pool:
+        with Pool(processes=num_processes) as pool:
             results = pool.map(extract_text_from_pages, vectors)
         return "".join(results)
     except Exception as e:
@@ -347,8 +342,11 @@ async def run_submission(request: SubmissionRequest):
     namespace = f"doc-{url_hash}"
    
     try:
-        print(f"[{namespace}] Ensuring a clean slate by deleting existing namespace data...")
-        await cleanup_namespace(namespace)
+        # --- MODIFICATION START ---
+        # The following lines have been removed to prevent clearing the namespace on every request.
+        # print(f"[{namespace}] Ensuring a clean slate by deleting existing namespace data...")
+        # await cleanup_namespace(namespace)
+        # --- MODIFICATION END ---
 
         print(f"[{namespace}] Starting document processing and indexing...")
         processing_successful = await process_and_index_document(request.documents, namespace)
