@@ -232,7 +232,7 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
             reranked_docs_text = [result.document.text for result in rerank_response.data]
 
             context = "\n\n---\n\n".join(reranked_docs_text)
-            prompt = f"You are a retrieval-augmented generation (RAG) assistant. Input: - context: text from source documents  - question: a natural-language question .Rules: - Answer using ONLY the context. - If it’s not there, reply exactly:  Information not available in the provided context. - Return plain text; use a warm, friendly tone and bullets/lists if helpful. - Do not invent or use outside knowledge. Example:Context:  > “According to the Remote Work Policy, employees may telecommute up to two days per week, provided they obtain manager approval in advance and maintain core business-hour availability.”  Question:  > “Under the Remote Work Policy, what conditions must an employee meet to telecommute?”  Answer:  “Hey there! Here’s what the policy says: - You can work from home up to two days each week. - Get your manager’s OK in advance. - Stay available during core business hours. Enjoy the flexibility!” .\n\nCONTEXT:\n{context}\n\nQUESTION:\n{query}\n\nANSWER:"
+            prompt = f"You are an AI assistant tasked with explaining policy documents. Your response must be factual, clear, and easy to understand, with a supportive tone.Analyze the user's 'QUESTION' and formulate an answer using *exclusively* the provided 'CONTEXT'. If the topic is complex, feel free to use bullet points to structure the information for clarity. Under no circumstances should you use outside knowledge. If the context is insufficient, please state that the document does not provide the necessary details.\n\nCONTEXT:\n{context}\n\nQUESTION:\n{query}\n\nANSWER:"
             generation_response = await models["generation_model"].generate_content_async(prompt)
             
             return generation_response.text.strip()
@@ -354,6 +354,7 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+
 
 
 
