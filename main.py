@@ -1,7 +1,8 @@
-# main.py (Version 8.4.0 - Auto-Adjusting Cores)
+# main.py (Version 9.0.0 - External Subprocess Parser)
 #
-# This version dynamically detects available CPU cores for parallel processing,
-# making it suitable for cloud deployments like Render.
+# This version delegates all PDF parsing to an external, decoupled script.
+# This architecture provides maximum performance and completely avoids gRPC/fork
+# conflicts, making it ideal for production environments like Railway.
 
 import os
 import re
@@ -18,8 +19,14 @@ from dotenv import load_dotenv
 from urllib.parse import urlparse
 import mimetypes
 
+# --- MODIFIED: Subprocess is now used for parsing ---
+import subprocess
+import sys
+
+# PyMuPDF is no longer directly used in this file for multiprocessing,
+# but the import is kept here as it's a core part of the project's logic,
+# even if abstracted away to the fitzcli.py script.
 import pymupdf
-from multiprocessing import Pool, cpu_count
 
 from fastapi import FastAPI, Depends, HTTPException, status, Security
 from fastapi.concurrency import run_in_threadpool
@@ -32,12 +39,11 @@ from pinecone.exceptions import NotFoundException
 
 # --- Configuration & Initialization ---
 load_dotenv()
-# --- MODIFIED: Removed static core count for dynamic adjustment ---
 
 app = FastAPI(
-    title="LIT RAG with Gemini, PyMuPDF, and Cohere Reranker (Auto-Scaling)",
-    description="Processes documents on-demand with a parallelized PyMuPDF parser that auto-adjusts to available CPU cores.",
-    version="8.4.0"
+    title="LIT RAG with Gemini, PyMuPDF, and Cohere Reranker (External Parser)",
+    description="Processes documents on-demand using a decoupled, high-performance PyMuPDF parser script.",
+    version="9.0.0"
 )
 
 # Global objects
@@ -77,47 +83,60 @@ async def startup_event():
 
     print("All components are live. Server is ready. ✅")
 
+
 # --- Parsing and Chunking Helpers ---
 
-def extract_text_from_pages(vector: tuple) -> str:
-    process_idx, total_cpus, filename = vector
-    page_text_snippets = []
-    try:
-        doc = pymupdf.open(filename)
-        num_pages = doc.page_count
-        pages_per_process = (num_pages + total_cpus - 1) // total_cpus
-        start_page = process_idx * pages_per_process
-        end_page = min(start_page + pages_per_process, num_pages)
-        for page_num in range(start_page, end_page):
-            try:
-                page = doc[page_num]
-                page_text_snippets.append(f"### Page {page_num + 1}\n\n")
-                page_text_snippets.append(page.get_text("text"))
-                page_text_snippets.append("\n\n---\n\n")
-            except Exception as e:
-                print(f"Process {process_idx}: Failed to process page {page_num} - {e}")
-        doc.close()
-    except Exception as e:
-        print(f"Process {process_idx}: Failed to open '{filename}' - {e}")
-    return "".join(page_text_snippets)
-
+# --- MODIFIED: Replaced multiprocessing with a subprocess call ---
 def run_pymupdf_extraction(filename: str) -> str:
     """
-    Synchronous wrapper for multiprocessing text extraction.
-    Dynamically uses the available CPU cores for best performance.
+    Invokes the external fitzcli.py script as a subprocess to extract text.
+    This decouples the CPU-intensive work and avoids any gRPC/fork conflicts.
     """
     try:
-        # --- MODIFIED: Dynamically determine process count ---
-        # This allows the app to adapt to the resources of the deployment environment (e.g., Render).
-        num_processes = cpu_count() or 2 # Fallback to 2 if detection fails
-        print(f"[{os.getpid()}] Starting PyMuPDF extraction with a pool of {num_processes} processes (auto-detected).")
-        
-        vectors = [(i, num_processes, filename) for i in range(num_processes)]
-        with Pool(processes=num_processes) as pool:
-            results = pool.map(extract_text_from_pages, vectors)
-        return "".join(results)
+        # Construct the command to run.
+        # Using sys.executable ensures we use the Python from our virtual env,
+        # which is crucial for deployments like Railway.
+        command = [
+            sys.executable,
+            "fitzcli.py",
+            "gettext",      # The subcommand for text extraction
+            filename,       # The input file
+            "-mode", "simple", # Use a fast and effective extraction mode
+        ]
+
+        print(f"[{os.getpid()}] Running parser subprocess: {' '.join(command)}")
+
+        # Run the command, capture its output, and check for errors.
+        # A timeout is critical for a web service to prevent hanging requests.
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,  # Decode stdout/stderr as text
+            encoding="utf-8",
+            errors="surrogatepass",
+            check=True, # Raise CalledProcessError if script fails
+            timeout=180 # 3-minute timeout for large documents
+        )
+
+        # Log any messages the script prints to its standard error
+        if result.stderr:
+            print(f"[Parser Subprocess STDERR]:\n{result.stderr}")
+
+        # The extracted text is in stdout
+        return result.stdout
+
+    except FileNotFoundError:
+        print("Error: 'fitzcli.py' not found. Ensure it is in the same directory as main.py.")
+        return ""
+    except subprocess.CalledProcessError as e:
+        print(f"The 'fitzcli.py' script failed with exit code {e.returncode}.")
+        print(f"STDERR from parser:\n{e.stderr}")
+        return ""
+    except subprocess.TimeoutExpired:
+        print(f"The parsing subprocess for '{filename}' timed out.")
+        return ""
     except Exception as e:
-        print(f"An error occurred during multiprocessing text extraction: {e}")
+        print(f"An unexpected error occurred while calling the parsing subprocess: {e}")
         return ""
 
 def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 50) -> List[str]:
@@ -137,6 +156,7 @@ def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 
         if chunk: chunks.append(chunk)
         current_chunk_start = max(current_chunk_start + 1, split_pos - overlap)
     return [c for c in chunks if c]
+
 
 # --- Helper Functions ---
 def batch_generator(data: List[Any], batch_size: int) -> Generator[List[Any], None, None]:
@@ -185,6 +205,7 @@ async def wait_for_index_readiness(namespace: str, expected_chunks: int, max_wai
     print(f"[{namespace}] WARNING: Index readiness timeout after {max_wait} seconds. The index may not be fully populated.")
     return False
 
+
 # --- Security & API Models ---
 security = HTTPBearer()
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
@@ -197,6 +218,7 @@ class SubmissionRequest(BaseModel):
 
 class SubmissionResponse(BaseModel):
     answers: List[str]
+
 
 # --- Core Processing Functions ---
 async def process_single_query(query: str, namespace: str, max_retries: int = 3) -> str:
@@ -247,6 +269,7 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
                 return "An internal error occurred while answering this question."
     return "Failed to process query after multiple retries."
 
+
 # --- Optimized Ingestion Function ---
 async def process_and_index_document(document_url: str, namespace: str) -> bool:
     """Processes and indexes a document with throttling and readiness verification."""
@@ -268,7 +291,7 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
         async with aiofiles.open(temp_file_path, "wb") as f:
             await f.write(response.content)
 
-        print(f"[{namespace}] Parsing document with PyMuPDF...")
+        print(f"[{namespace}] Parsing document with external 'fitzcli.py' script...")
         full_text_content = await run_in_threadpool(run_pymupdf_extraction, temp_file_path)
         if not full_text_content:
             print(f"[{namespace}] Failed to extract any text.")
@@ -326,28 +349,20 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
         if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
+
 # --- Main API Endpoint ---
 @app.post("/api/v1/hackrx/run", response_model=SubmissionResponse, dependencies=[Depends(verify_token)])
 async def run_submission(request: SubmissionRequest):
     """Implements the stateless hybrid RAG pipeline."""
-    # --- ADDED CODE START ---
-    # Print the incoming URL and questions to the terminal for visibility.
     print(f"\n--- New Request Received ---")
     print(f"Processing URL: {request.documents}")
     print(f"Answering {len(request.questions)} Questions: {request.questions}")
     print(f"--------------------------\n")
-    # --- ADDED CODE END ---
 
     url_hash = generate_url_hash(request.documents)
     namespace = f"doc-{url_hash}"
    
     try:
-        # --- MODIFICATION START ---
-        # The following lines have been removed to prevent clearing the namespace on every request.
-        # print(f"[{namespace}] Ensuring a clean slate by deleting existing namespace data...")
-        # await cleanup_namespace(namespace)
-        # --- MODIFICATION END ---
-
         print(f"[{namespace}] Starting document processing and indexing...")
         processing_successful = await process_and_index_document(request.documents, namespace)
         if not processing_successful:
