@@ -80,6 +80,14 @@ async def startup_event():
 # --- Parsing and Chunking Helpers ---
 
 def extract_text_from_pages(vector: tuple) -> str:
+    """Extracts text from pages of a document within a specified range.
+
+    Args:
+        vector (tuple): A tuple containing process index, total number of processes, and the filename.
+
+    Returns:
+        str: Concatenated text snippets extracted from the pages.
+    """
     process_idx, total_cpus, filename = vector
     page_text_snippets = []
     try:
@@ -105,6 +113,12 @@ def run_pymupdf_extraction(filename: str) -> str:
     """
     Synchronous wrapper for multiprocessing text extraction.
     Dynamically uses the available CPU cores for best performance.
+
+    Args:
+        filename (str): The path to the document file.
+
+    Returns:
+        str: Extracted text content from the document.
     """
     try:
         # --- MODIFIED: Dynamically determine process count ---
@@ -121,6 +135,16 @@ def run_pymupdf_extraction(filename: str) -> str:
         return ""
 
 def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 50) -> List[str]:
+    """Splits a long text into smaller chunks based on character overlap.
+
+    Args:
+        text (str): The input text to split.
+        max_length (int): Maximum length of each chunk. Defaults to 4000.
+        overlap (int): Number of overlapping characters between chunks. Defaults to 50.
+
+    Returns:
+        List[str]: A list of text chunks.
+    """
     if not text: return []
     chunks = []
     current_chunk_start = 0
@@ -140,13 +164,38 @@ def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 
 
 # --- Helper Functions ---
 def batch_generator(data: List[Any], batch_size: int) -> Generator[List[Any], None, None]:
+    """Generates batches of data from a list.
+
+    Args:
+        data (List[Any]): The input list.
+        batch_size (int): The size of each batch.
+
+    Yields:
+        Generator[List[Any], None, None]: A generator yielding batches of data.
+    """
     for i in range(0, len(data), batch_size):
         yield data[i:i + batch_size]
 
 def generate_url_hash(url: str) -> str:
+    """Generates an MD5 hash from a URL.
+
+    Args:
+        url (str): The URL to hash.
+
+    Returns:
+        str: The first 16 characters of the MD5 hash.
+    """
     return hashlib.md5(url.encode()).hexdigest()[:16]
 
 async def cleanup_namespace(namespace: str) -> bool:
+    """Deletes all vectors within a Pinecone namespace.
+
+    Args:
+        namespace (str): The namespace to clean up.
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
     try:
         await run_in_threadpool(pinecone_index.delete, delete_all=True, namespace=namespace)
         print(f"[CLEANUP] Successfully deleted existing namespace: {namespace}")
@@ -159,7 +208,16 @@ async def cleanup_namespace(namespace: str) -> bool:
         return False
 
 async def wait_for_index_readiness(namespace: str, expected_chunks: int, max_wait: int = 120) -> bool:
-    """Waits for the Pinecone index to be ready by checking the vector count."""
+    """Waits for the Pinecone index to be ready by checking the vector count.
+
+    Args:
+        namespace (str): The Pinecone namespace.
+        expected_chunks (int): The expected number of vectors.
+        max_wait (int): Maximum wait time in seconds. Defaults to 120.
+
+    Returns:
+        bool: True if the index is ready, False otherwise.
+    """
     print(f"[{namespace}] Waiting for index to be ready with at least {expected_chunks} vectors...")
     for attempt in range(max_wait):
         try:
@@ -188,19 +246,38 @@ async def wait_for_index_readiness(namespace: str, expected_chunks: int, max_wai
 # --- Security & API Models ---
 security = HTTPBearer()
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """Verifies the authentication token.
+
+    Args:
+        credentials (HTTPAuthorizationCredentials, optional): The security credentials. Defaults to Security(security).
+
+    Raises:
+        HTTPException: If the authentication token is invalid.
+    """
     if not (credentials and credentials.scheme == "Bearer" and credentials.credentials == os.getenv("API_BEARER_TOKEN")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
 
 class SubmissionRequest(BaseModel):
+    """Request model for submitting documents and questions."""
     documents: str
     questions: List[str]
 
 class SubmissionResponse(BaseModel):
+    """Response model containing the answers to the submitted questions."""
     answers: List[str]
 
 # --- Core Processing Functions ---
 async def process_single_query(query: str, namespace: str, max_retries: int = 3) -> str:
-    """Processes a query with retry logic for enhanced robustness."""
+    """Processes a single query against the document index.
+
+    Args:
+        query (str): The query string.
+        namespace (str): The Pinecone namespace.
+        max_retries (int): Maximum number of retries. Defaults to 3.
+
+    Returns:
+        str: The answer to the query.
+    """
     for attempt in range(max_retries):
         try:
             dense_response, sparse_response = await asyncio.gather(
@@ -232,7 +309,15 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
             reranked_docs_text = [result.document.text for result in rerank_response.data]
 
             context = "\n\n---\n\n".join(reranked_docs_text)
-            prompt = f""You are an AI assistant designed to make policy documents accessible and relatable to real people. Your mission is to transform complex policy language into conversations that feel supportive, clear, and genuinely helpful. Every response must follow a specific structure that begins with an engaging opening using approaches like showing empathy with phrases such as "We understand this can be confusing..." or "This is a great question that many people have...", providing context with "Let's break this down in simple terms..." or "Here's what this actually means for you...", using relatable scenarios like "Imagine you're in this situation..." or "Picture this scenario...", or being honest about complexity with "Insurance jargon can be overwhelming, so let's simplify this...". The middle content should present information clearly using bullet points for complex topics, explaining technical terms in plain language, structuring information logically, and using examples when possible, all while basing everything exclusively on the provided context. Every response must close with supportive endings that include practical advice using phrases like "Pro tip:", "Bottom line:", or "Remember:", offer reassurance with "The good news is..." or "While this seems restrictive, it actually...", provide next steps such as "If you're unsure, always..." or "Keep in mind...", or give peace of mind with "This protects you by..." or "Once you understand this, you'll feel more confident...". Your tone should be conversational but professional, writing like you're explaining to a friend who trusts you, showing understanding of user frustrations, making complex topics feel manageable, and using "you" and "your" to make responses personal. You must strictly use only the provided context and never add outside knowledge, and if the context is insufficient, state "The document doesn't provide enough detail on this, but here's what we do know..." while maintaining factual accuracy and keeping the supportive, helpful tone throughout to ensure users feel informed, confident, and supported..\n\nCONTEXT:\n{context}\n\nQUESTION:\n{query}\n\nANSWER:""
+            prompt = f"""You are an AI assistant designed to make policy documents accessible and relatable to real people. Your mission is to transform complex policy language into conversations that feel supportive, clear, and genuinely helpful. Every response must follow a specific structure that begins with an engaging opening using approaches like showing empathy with phrases such as "We understand this can be confusing..." or "This is a great question that many people have...", providing context with "Let's break this down in simple terms..." or "Here's what this actually means for you...", using relatable scenarios like "Imagine you're in this situation..." or "Picture this scenario...", or being honest about complexity with "Insurance jargon can be overwhelming, so let's simplify this...". The middle content should present information clearly using bullet points for complex topics, explaining technical terms in plain language, structuring information logically, and using examples when possible, all while basing everything exclusively on the provided context. Every response must close with supportive endings that include practical advice using phrases like "Pro tip:", "Bottom line:", or "Remember:", offer reassurance with "The good news is..." or "While this seems restrictive, it actually...", provide next steps such as "If you're unsure, always..." or "Keep in mind...", or give peace of mind with "This protects you by..." or "Once you understand this, you'll feel more confident...". Your tone should be conversational but professional, writing like you're explaining to a friend who trusts you, showing understanding of user frustrations, making complex topics feel manageable, and using "you" and "your" to make responses personal. You must strictly use only the provided context and never add outside knowledge, and if the context is insufficient, state "The document doesn't provide enough detail on this, but here's what we do know..." while maintaining factual accuracy and keeping the supportive, helpful tone throughout to ensure users feel informed, confident, and supported.
+
+CONTEXT:
+{context}
+
+QUESTION:
+{query}
+
+ANSWER:"""
             generation_response = await models["generation_model"].generate_content_async(prompt)
             
             return generation_response.text.strip()
@@ -249,7 +334,15 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
 
 # --- Optimized Ingestion Function ---
 async def process_and_index_document(document_url: str, namespace: str) -> bool:
-    """Processes and indexes a document with throttling and readiness verification."""
+    """Processes and indexes a document with throttling and readiness verification.
+
+    Args:
+        document_url (str): URL of the document to process.
+        namespace (str): The Pinecone namespace.
+
+    Returns:
+        bool: True if processing was successful, False otherwise.
+    """
     temp_file_path = None
     try:
         print(f"[{namespace}] Downloading document...")
@@ -282,6 +375,15 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
         print(f"[{namespace}] Document processed into {len(document_chunks)} chunks.")
 
         async def embed_and_upsert_batch(chunk_batch: List[str], batch_start_index: int) -> bool:
+            """Embeds and upserts a batch of chunks to Pinecone.
+
+            Args:
+                chunk_batch (List[str]): A list of text chunks.
+                batch_start_index (int): The starting index of the batch.
+
+            Returns:
+                bool: True if successful, False otherwise.
+            """
             try:
                 dense_response, sparse_response = await asyncio.gather(
                     run_in_threadpool(pc.inference.embed, model=DENSE_MODEL, inputs=chunk_batch, parameters={"input_type": "passage"}),
@@ -329,7 +431,17 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
 # --- Main API Endpoint ---
 @app.post("/api/v1/hackrx/run", response_model=SubmissionResponse, dependencies=[Depends(verify_token)])
 async def run_submission(request: SubmissionRequest):
-    """Implements the stateless hybrid RAG pipeline."""
+    """Implements the stateless hybrid RAG pipeline.
+
+    Args:
+        request (SubmissionRequest): The submission request containing the document URL and questions.
+
+    Returns:
+        SubmissionResponse: The answers to the questions.
+
+    Raises:
+        HTTPException: If there's an error processing the document or answering the questions.
+    """
     url_hash = generate_url_hash(request.documents)
     namespace = f"doc-{url_hash}"
    
@@ -354,19 +466,3 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
