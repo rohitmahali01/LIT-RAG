@@ -1,10 +1,10 @@
-# main.py (Version 9.0.0 - Production Architecture)
+# main.py (Version 9.1.0 - IPC Optimized)
 #
-# This version implements the final and most robust architecture by delegating
-# the entire multiprocessing PDF parsing task to an isolated, sandboxed
-# process. This completely resolves the underlying conflict between gRPC
-# threads in the main application and the use of multiprocessing, ensuring
-# stability and correctness even under heavy load in a multi-worker environment.
+# This version eliminates the inter-process communication (IPC) bottleneck by
+# using a temporary file for data transfer instead of a multiprocessing.Queue.
+# The isolated worker now writes its output directly to a file, which the parent
+# process reads after the worker exits. This is a more robust and scalable
+# pattern for handling large data between processes.
 
 import os
 import re
@@ -35,8 +35,6 @@ from pinecone.exceptions import NotFoundException
 from filelock import FileLock, Timeout
 
 # --- Fork-Safety Configuration ---
-# Set the start method to 'spawn' to ensure clean child processes.
-# This is critical for preventing conflicts with libraries like gRPC.
 try:
     if mp.get_start_method(allow_none=True) != 'spawn':
         mp.set_start_method("spawn", force=True)
@@ -50,7 +48,7 @@ load_dotenv()
 app = FastAPI(
     title="LIT RAG with Gemini, PyMuPDF, and Cohere Reranker (Auto-Scaling)",
     description="Processes documents on-demand with a parallelized PyMuPDF parser that auto-adjusts to available CPU cores.",
-    version="9.0.0"
+    version="9.1.0"
 )
 
 lock_path = os.path.join(tempfile.gettempdir(), "rag_pipeline.lock")
@@ -94,7 +92,7 @@ async def startup_event():
 
     print(f"[{os.getpid()}] All components are live. Server is ready. ✅")
 
-# --- MODIFIED: Isolated PDF Parsing Logic ---
+# --- MODIFIED: Isolated PDF Parsing using File-based IPC ---
 
 def extract_text_from_pages(vector: tuple) -> str:
     """This is the lowest-level worker function, it processes a subset of pages."""
@@ -119,11 +117,10 @@ def extract_text_from_pages(vector: tuple) -> str:
         print(f"Sub-process {os.getpid()}: Failed to open '{filename}' - {e}")
     return "".join(page_text_snippets)
 
-def pymupdf_worker(filename: str, queue: mp.Queue):
+def pymupdf_worker(filename: str, output_path: str):
     """
-    This function runs in a completely separate process. It is designed to be a
-    target for mp.Process. It creates its OWN Pool, extracts text, and puts
-    the result in a queue. It has no knowledge of gRPC or the main web server.
+    Runs in a separate process. Creates its own Pool, extracts text, and writes
+    the result to the specified output file path. This avoids slow queue-based IPC.
     """
     try:
         print(f"[Isolated Worker {os.getpid()}] Starting PDF processing.")
@@ -136,49 +133,64 @@ def pymupdf_worker(filename: str, queue: mp.Queue):
         full_text = "".join(results)
         if not full_text:
             raise ValueError("Extraction resulted in empty text.")
-        queue.put(full_text)
-        print(f"[Isolated Worker {os.getpid()}] PDF processing successful.")
+        
+        # Write the result to the designated file instead of a queue.
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(full_text)
+            
+        print(f"[Isolated Worker {os.getpid()}] PDF processing successful. Output written to {output_path}.")
     except Exception as e:
         print(f"[Isolated Worker {os.getpid()}] CRITICAL FAILURE during PDF processing: {e}")
-        queue.put(e)
+        # Signal failure by writing an error message to the file.
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(f"ERROR: {e}")
 
 async def run_pymupdf_extraction(filename: str) -> str:
     """
-    Launches the PyMuPDF extraction in a dedicated, isolated process to avoid
-    conflicts with the main application's gRPC threads.
+    Launches the PyMuPDF extraction in a dedicated process, using a temporary
+    file to retrieve the result, which is robust for large data.
     """
-    ctx = mp.get_context()
-    q = ctx.Queue()
-    
-    process = ctx.Process(target=pymupdf_worker, args=(filename, q))
-    
-    def run_and_wait():
-        process.start()
-        process.join(timeout=180) # 3-minute timeout for the entire parsing job
-        if process.is_alive():
-            print(f"[Parent {os.getpid()}] PyMuPDF process timed out, terminating.")
-            process.terminate()
-            process.join()
-            return "TIMEOUT"
-        if process.exitcode != 0:
-            print(f"[Parent {os.getpid()}] PyMuPDF process exited with non-zero code: {process.exitcode}")
-            return "PROCESS_ERROR"
-
-    # Run the blocking process management in a thread pool to not block the event loop.
-    status = await run_in_threadpool(run_and_wait)
-    if status in ["TIMEOUT", "PROCESS_ERROR"]:
-        return ""
-
-    if q.empty():
-        print(f"[Parent {os.getpid()}] PyMuPDF worker queue is empty after process finished. This indicates an early failure.")
-        return ""
+    output_file = None
+    process = None
+    try:
+        # Create a temporary file to store the result.
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=".txt", encoding='utf-8') as f:
+            output_file = f.name
         
-    result = q.get()
-    if isinstance(result, Exception):
-        print(f"[Parent {os.getpid()}] Received an exception from the PyMuPDF worker: {result}")
-        return ""
+        ctx = mp.get_context()
+        process = ctx.Process(target=pymupdf_worker, args=(filename, output_file))
+
+        def run_and_wait():
+            process.start()
+            process.join(timeout=180) # 3-minute safety timeout
+            if process.is_alive():
+                print(f"[Parent {os.getpid()}] PyMuPDF process timed out, terminating.")
+                process.terminate()
+                process.join()
+                return False
+            return process.exitcode == 0
+
+        # Run the blocking process management in a thread pool.
+        success = await run_in_threadpool(run_and_wait)
+
+        if not success:
+            print(f"[Parent {os.getpid()}] PyMuPDF worker process failed or timed out.")
+            return ""
+
+        # Read the result from the temporary file.
+        async with aiofiles.open(output_file, 'r', encoding='utf-8') as f:
+            content = await f.read()
+
+        if content.startswith("ERROR:"):
+            print(f"[Parent {os.getpid()}] Received error from worker: {content}")
+            return ""
         
-    return result
+        return content
+
+    finally:
+        # Clean up the temporary file.
+        if output_file and os.path.exists(output_file):
+            os.remove(output_file)
 
 
 def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 50) -> List[str]:
