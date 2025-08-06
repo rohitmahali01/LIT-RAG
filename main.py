@@ -1,10 +1,9 @@
-# main.py (Version 9.1.0 - IPC Optimized)
+# main.py (Version 9.2.0 - Production Hardened)
 #
-# This version eliminates the inter-process communication (IPC) bottleneck by
-# using a temporary file for data transfer instead of a multiprocessing.Queue.
-# The isolated worker now writes its output directly to a file, which the parent
-# process reads after the worker exits. This is a more robust and scalable
-# pattern for handling large data between processes.
+# This version introduces a self-healing lock mechanism. It detects and removes
+# stale lock files left behind by unexpectedly terminated processes. This prevents
+# permanent deadlocks and ensures the service remains available, which is a
+# critical feature for production stability.
 
 import os
 import re
@@ -48,11 +47,12 @@ load_dotenv()
 app = FastAPI(
     title="LIT RAG with Gemini, PyMuPDF, and Cohere Reranker (Auto-Scaling)",
     description="Processes documents on-demand with a parallelized PyMuPDF parser that auto-adjusts to available CPU cores.",
-    version="9.1.0"
+    version="9.2.0"
 )
 
 lock_path = os.path.join(tempfile.gettempdir(), "rag_pipeline.lock")
 global_lock = FileLock(lock_path)
+STALE_LOCK_THRESHOLD = 600 # 10 minutes
 
 # Global objects
 models: Dict[str, Any] = {}
@@ -92,7 +92,28 @@ async def startup_event():
 
     print(f"[{os.getpid()}] All components are live. Server is ready. ✅")
 
-# --- MODIFIED: Isolated PDF Parsing using File-based IPC ---
+# --- MODIFIED: Self-Healing Lock Acquisition ---
+async def acquire_robust_lock():
+    """
+    Acquires the global file lock, but first checks for and removes stale locks
+    left behind by crashed processes.
+    """
+    def check_and_acquire():
+        # Check if the lock file exists and is stale.
+        if os.path.exists(lock_path):
+            try:
+                lock_age = time.time() - os.path.getmtime(lock_path)
+                if lock_age > STALE_LOCK_THRESHOLD:
+                    print(f"[Self-Healing] Stale lock file found (age: {lock_age:.0f}s). Removing '{lock_path}'.")
+                    os.remove(lock_path)
+            except OSError as e:
+                print(f"[Self-Healing] Error checking or removing stale lock file: {e}")
+
+        # Now, attempt to acquire the lock with a timeout.
+        global_lock.acquire(timeout=300)
+
+    await run_in_threadpool(check_and_acquire)
+
 
 def extract_text_from_pages(vector: tuple) -> str:
     """This is the lowest-level worker function, it processes a subset of pages."""
@@ -120,7 +141,7 @@ def extract_text_from_pages(vector: tuple) -> str:
 def pymupdf_worker(filename: str, output_path: str):
     """
     Runs in a separate process. Creates its own Pool, extracts text, and writes
-    the result to the specified output file path. This avoids slow queue-based IPC.
+    the result to the specified output file path.
     """
     try:
         print(f"[Isolated Worker {os.getpid()}] Starting PDF processing.")
@@ -134,26 +155,23 @@ def pymupdf_worker(filename: str, output_path: str):
         if not full_text:
             raise ValueError("Extraction resulted in empty text.")
         
-        # Write the result to the designated file instead of a queue.
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(full_text)
             
         print(f"[Isolated Worker {os.getpid()}] PDF processing successful. Output written to {output_path}.")
     except Exception as e:
         print(f"[Isolated Worker {os.getpid()}] CRITICAL FAILURE during PDF processing: {e}")
-        # Signal failure by writing an error message to the file.
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(f"ERROR: {e}")
 
 async def run_pymupdf_extraction(filename: str) -> str:
     """
     Launches the PyMuPDF extraction in a dedicated process, using a temporary
-    file to retrieve the result, which is robust for large data.
+    file to retrieve the result.
     """
     output_file = None
     process = None
     try:
-        # Create a temporary file to store the result.
         with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=".txt", encoding='utf-8') as f:
             output_file = f.name
         
@@ -162,7 +180,7 @@ async def run_pymupdf_extraction(filename: str) -> str:
 
         def run_and_wait():
             process.start()
-            process.join(timeout=180) # 3-minute safety timeout
+            process.join(timeout=180)
             if process.is_alive():
                 print(f"[Parent {os.getpid()}] PyMuPDF process timed out, terminating.")
                 process.terminate()
@@ -170,14 +188,12 @@ async def run_pymupdf_extraction(filename: str) -> str:
                 return False
             return process.exitcode == 0
 
-        # Run the blocking process management in a thread pool.
         success = await run_in_threadpool(run_and_wait)
 
         if not success:
             print(f"[Parent {os.getpid()}] PyMuPDF worker process failed or timed out.")
             return ""
 
-        # Read the result from the temporary file.
         async with aiofiles.open(output_file, 'r', encoding='utf-8') as f:
             content = await f.read()
 
@@ -188,7 +204,6 @@ async def run_pymupdf_extraction(filename: str) -> str:
         return content
 
     finally:
-        # Clean up the temporary file.
         if output_file and os.path.exists(output_file):
             os.remove(output_file)
 
@@ -211,7 +226,6 @@ def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 
         current_chunk_start = max(current_chunk_start + 1, split_pos - overlap)
     return [c for c in chunks if c]
 
-# --- Helper Functions ---
 def batch_generator(data: List[Any], batch_size: int) -> Generator[List[Any], None, None]:
     for i in range(0, len(data), batch_size):
         yield data[i:i + batch_size]
@@ -257,7 +271,6 @@ async def wait_for_index_readiness(namespace: str, expected_chunks: int, max_wai
     print(f"[{namespace}] CRITICAL: Index readiness timeout after {max_wait} seconds.")
     return False
 
-# --- Security & API Models ---
 security = HTTPBearer()
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
     if not (credentials and credentials.scheme == "Bearer" and credentials.credentials == os.getenv("API_BEARER_TOKEN")):
@@ -270,7 +283,6 @@ class SubmissionRequest(BaseModel):
 class SubmissionResponse(BaseModel):
     answers: List[str]
 
-# --- Core Processing Functions ---
 async def process_single_query(query: str, namespace: str, max_retries: int = 3) -> str:
     for attempt in range(max_retries):
         try:
@@ -319,7 +331,6 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
     return "Failed to process query after multiple retries."
 
 async def process_and_index_document(document_url: str, namespace: str) -> bool:
-    """Processes and indexes a document with throttling and readiness verification."""
     temp_file_path = None
     try:
         await cleanup_namespace(namespace)
@@ -399,14 +410,14 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
         if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
-# --- Main API Endpoint ---
 @app.post("/api/v1/hackrx/run", response_model=SubmissionResponse, dependencies=[Depends(verify_token)])
 async def run_submission(request: SubmissionRequest):
     url_hash = generate_url_hash(request.documents)
     namespace = f"doc-{url_hash}"
     
     try:
-        await run_in_threadpool(global_lock.acquire, timeout=300)
+        # --- MODIFIED: Use the new robust lock acquisition function ---
+        await acquire_robust_lock()
         print(f"[{namespace}] Global lock acquired by process {os.getpid()}.")
 
         try:
