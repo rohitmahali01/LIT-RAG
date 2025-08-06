@@ -1,7 +1,8 @@
-# main.py (Version 8.4.0 - Auto-Adjusting Cores)
+# main.py (Version 9.1.0 - Unstructured CPU-Only & Recursive Splitter)
 #
-# This version dynamically detects available CPU cores for parallel processing,
-# making it suitable for cloud deployments like Render.
+# This version ensures no GPU is required for local processing by setting
+# the Unstructured partition strategy to "fast". It retains the versatile
+# document support and recursive chunking.
 
 import os
 import re
@@ -18,8 +19,10 @@ from dotenv import load_dotenv
 from urllib.parse import urlparse
 import mimetypes
 
-import pymupdf
-from multiprocessing import Pool, cpu_count
+# Imports for Unstructured and LangChain
+from unstructured.partition.auto import partition as unstructured_partition
+from unstructured.documents.elements import Table
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 from fastapi import FastAPI, Depends, HTTPException, status, Security
 from fastapi.concurrency import run_in_threadpool
@@ -32,12 +35,11 @@ from pinecone.exceptions import NotFoundException
 
 # --- Configuration & Initialization ---
 load_dotenv()
-# --- MODIFIED: Removed static core count for dynamic adjustment ---
 
 app = FastAPI(
-    title="LIT RAG with Gemini, PyMuPDF, and Cohere Reranker (Auto-Scaling)",
-    description="Processes documents on-demand with a parallelized PyMuPDF parser that auto-adjusts to available CPU cores.",
-    version="8.4.0"
+    title="LIT RAG with Gemini, Unstructured (CPU), and Cohere Reranker",
+    description="A CPU-only RAG pipeline that processes documents on-demand with Unstructured ('fast' strategy), chunks with a recursive splitter, and reranks results using Cohere's API.",
+    version="9.1.0"
 )
 
 # Global objects
@@ -57,86 +59,27 @@ RERANK_MODEL = "cohere-rerank-3.5"
 async def startup_event():
     """Initialize service connections and models."""
     print("Server starting up...")
+    print("Using Unstructured ('fast' strategy) for CPU-only document parsing.")
+    print("Using LangChain's RecursiveCharacterTextSplitter for chunking.")
     print("Using Pinecone's Cohere Reranker API for document reranking.")
 
     if not os.getenv("GOOGLE_API_KEY"):
         raise ValueError("GOOGLE_API_KEY environment variable not found.")
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
     models["generation_model"] = genai.GenerativeModel('gemini-2.5-flash-lite')
-
+    
     global pc, pinecone_index
     pinecone_api_key = os.getenv("PINECONE_API_KEY")
     if not pinecone_api_key:
         raise ValueError("PINECONE_API_KEY environment variable not found.")
     pc = Pinecone(api_key=pinecone_api_key)
     
-    index_name = "hybrid-challenge-index"
+    index_name = "hybrid-challenge-index-unstructured-cpu"
     if index_name not in pc.list_indexes().names():
         pc.create_index(name=index_name, dimension=DENSE_DIMENSION, metric="dotproduct", spec={"serverless": {"cloud": "aws", "region": "us-east-1"}})
     pinecone_index = pc.Index(index_name)
 
     print("All components are live. Server is ready. ✅")
-
-# --- Parsing and Chunking Helpers ---
-
-def extract_text_from_pages(vector: tuple) -> str:
-    process_idx, total_cpus, filename = vector
-    page_text_snippets = []
-    try:
-        doc = pymupdf.open(filename)
-        num_pages = doc.page_count
-        pages_per_process = (num_pages + total_cpus - 1) // total_cpus
-        start_page = process_idx * pages_per_process
-        end_page = min(start_page + pages_per_process, num_pages)
-        for page_num in range(start_page, end_page):
-            try:
-                page = doc[page_num]
-                page_text_snippets.append(f"### Page {page_num + 1}\n\n")
-                page_text_snippets.append(page.get_text("text"))
-                page_text_snippets.append("\n\n---\n\n")
-            except Exception as e:
-                print(f"Process {process_idx}: Failed to process page {page_num} - {e}")
-        doc.close()
-    except Exception as e:
-        print(f"Process {process_idx}: Failed to open '{filename}' - {e}")
-    return "".join(page_text_snippets)
-
-def run_pymupdf_extraction(filename: str) -> str:
-    """
-    Synchronous wrapper for multiprocessing text extraction.
-    Dynamically uses the available CPU cores for best performance.
-    """
-    try:
-        # --- MODIFIED: Dynamically determine process count ---
-        # This allows the app to adapt to the resources of the deployment environment (e.g., Render).
-        num_processes = cpu_count() or 2 # Fallback to 2 if detection fails
-        print(f"[{os.getpid()}] Starting PyMuPDF extraction with a pool of {num_processes} processes (auto-detected).")
-        
-        vectors = [(i, num_processes, filename) for i in range(num_processes)]
-        with Pool(processes=num_processes) as pool:
-            results = pool.map(extract_text_from_pages, vectors)
-        return "".join(results)
-    except Exception as e:
-        print(f"An error occurred during multiprocessing text extraction: {e}")
-        return ""
-
-def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 50) -> List[str]:
-    if not text: return []
-    chunks = []
-    current_chunk_start = 0
-    while current_chunk_start < len(text):
-        end_pos = current_chunk_start + max_length
-        if end_pos >= len(text):
-            chunks.append(text[current_chunk_start:].strip())
-            break
-        split_pos = text.rfind("\n\n", current_chunk_start, end_pos)
-        if split_pos == -1: split_pos = text.rfind("\n", current_chunk_start, end_pos)
-        if split_pos == -1: split_pos = text.rfind(". ", current_chunk_start, end_pos)
-        if split_pos == -1: split_pos = end_pos
-        chunk = text[current_chunk_start:split_pos].strip()
-        if chunk: chunks.append(chunk)
-        current_chunk_start = max(current_chunk_start + 1, split_pos - overlap)
-    return [c for c in chunks if c]
 
 # --- Helper Functions ---
 def batch_generator(data: List[Any], batch_size: int) -> Generator[List[Any], None, None]:
@@ -249,7 +192,7 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
 
 # --- Optimized Ingestion Function ---
 async def process_and_index_document(document_url: str, namespace: str) -> bool:
-    """Processes and indexes a document with throttling and readiness verification."""
+    """Processes and indexes a document using Unstructured and Recursive Splitter on CPU."""
     temp_file_path = None
     try:
         print(f"[{namespace}] Downloading document...")
@@ -268,18 +211,48 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
         async with aiofiles.open(temp_file_path, "wb") as f:
             await f.write(response.content)
 
-        print(f"[{namespace}] Parsing document with PyMuPDF...")
-        full_text_content = await run_in_threadpool(run_pymupdf_extraction, temp_file_path)
-        if not full_text_content:
-            print(f"[{namespace}] Failed to extract any text.")
+        print(f"[{namespace}] Parsing document with Unstructured (CPU-only 'fast' strategy)...")
+        # Use the "fast" strategy to ensure no GPU is required. This is a CPU-bound operation.
+        elements = await run_in_threadpool(unstructured_partition, filename=temp_file_path, strategy="fast")
+
+        # Separate text content from table content
+        text_content = []
+        table_content = []
+        for el in elements:
+            if isinstance(el, Table):
+                # Attempt to get HTML representation of the table first
+                table_html = el.metadata.text_as_html
+                if table_html:
+                    table_content.append(table_html)
+                else:
+                    # Fallback to plain text if HTML is not available
+                    table_content.append(str(el.text))
+            else:
+                text_content.append(str(el.text))
+
+        full_text = "\n\n".join(text_content)
+        
+        if not full_text and not table_content:
+            print(f"[{namespace}] Failed to extract any text or tables from the document.")
             return False
-            
-        document_chunks = recursive_character_split(full_text_content)
+
+        # Chunk the text using RecursiveCharacterTextSplitter
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=3000,
+            chunk_overlap=50,
+            separators=["\n\n", "\n", ". ", " ", ""],
+            length_function=len,
+        )
+        text_chunks = text_splitter.split_text(full_text)
+        
+        # Combine text chunks with full table representations
+        document_chunks = text_chunks + table_content
+
         if not document_chunks:
-            print(f"[{namespace}] Failed to chunk the document text.")
+            print(f"[{namespace}] Failed to create any chunks from the document text.")
             return False
         
-        print(f"[{namespace}] Document processed into {len(document_chunks)} chunks.")
+        print(f"[{namespace}] Document processed into {len(document_chunks)} chunks ({len(text_chunks)} text, {len(table_content)} tables).")
 
         async def embed_and_upsert_batch(chunk_batch: List[str], batch_start_index: int) -> bool:
             try:
@@ -333,6 +306,16 @@ async def run_submission(request: SubmissionRequest):
     url_hash = generate_url_hash(request.documents)
     namespace = f"doc-{url_hash}"
    
+    # --- MODIFICATION START: This block prints the incoming request details ---
+    print("\n" + "="*80)
+    print(f"Received new request for document URL:")
+    print(f"  -> {request.documents}")
+    print("\nQuestions being asked:")
+    for i, question in enumerate(request.questions, 1):
+        print(f"  {i}. {question}")
+    print("="*80 + "\n")
+    # --- MODIFICATION END ---
+    
     try:
         print(f"[{namespace}] Ensuring a clean slate by deleting existing namespace data...")
         await cleanup_namespace(namespace)
@@ -354,16 +337,3 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
-
-
-
-
-
-
-
-
-
-
-
-
-
