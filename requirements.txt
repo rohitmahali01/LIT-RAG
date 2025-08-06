@@ -1,34 +1,29 @@
 # requirements.txt
 
 # --- Core Web Framework ---
-# FastAPI is the high-performance web framework used for the API.
+# For building the API endpoints
 fastapi
 
-# Uvicorn is the ASGI server that runs the FastAPI application.
-# The [standard] option includes performance-enhancing libraries.
-uvicorn[standard]
+# ASGI server to run the FastAPI application
+uvicorn
 
-# --- AI & Vector Database Services ---
-# The official Python client for Google's Generative AI models (Gemini).
-google-generativeai
-
-# The official Python client for the Pinecone vector database.
+# --- API Clients & AI Services ---
+# The official Pinecone client for vector search and reranking
 pinecone
 
-# --- Asynchronous Operations ---
-# A high-performance async HTTP client for downloading documents.
+# Google's client for accessing Gemini models
+google-generativeai
+
+# For making asynchronous HTTP requests (to download documents)
 httpx
 
-# Provides async support for file system operations.
-aiofiles
-
 # --- Document Processing ---
-# A highly versatile library for PDF parsing and text extraction.
+# The core library for PDF parsing, used by fitzcli.py
 PyMuPDF
 
 # --- Utilities ---
-# Reads key-value pairs from a .env file and sets them as environment variables.
-python-dotenv
+# For asynchronous file I/O (writing downloaded files)
+aiofiles
 
-# A platform-independent file lock, essential for synchronizing multiple server processes.
-filelock
+# For loading environment variables from a .env file
+python-dotenv
