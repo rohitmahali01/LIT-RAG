@@ -330,6 +330,14 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
 @app.post("/api/v1/hackrx/run", response_model=SubmissionResponse, dependencies=[Depends(verify_token)])
 async def run_submission(request: SubmissionRequest):
     """Implements the stateless hybrid RAG pipeline."""
+    # --- ADDED CODE START ---
+    # Print the incoming URL and questions to the terminal for visibility.
+    print(f"\n--- New Request Received ---")
+    print(f"Processing URL: {request.documents}")
+    print(f"Answering {len(request.questions)} Questions: {request.questions}")
+    print(f"--------------------------\n")
+    # --- ADDED CODE END ---
+
     url_hash = generate_url_hash(request.documents)
     namespace = f"doc-{url_hash}"
    
@@ -354,15 +362,3 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
-
-
-
-
-
-
-
-
-
-
-
-
