@@ -1,29 +1,30 @@
-# requirements.txt
-
-# --- Core Web Framework ---
-# For building the API endpoints
+# --- Core Application Framework ---
 fastapi
-
-# ASGI server to run the FastAPI application
 uvicorn
 
-# --- API Clients & AI Services ---
-# The official Pinecone client for vector search and reranking
-pinecone
-
-# Google's client for accessing Gemini models
-google-generativeai
-
-# For making asynchronous HTTP requests (to download documents)
+# --- Asynchronous Services ---
 httpx
-
-# --- Document Processing ---
-# The core library for PDF parsing, used by fitzcli.py
-PyMuPDF
-
-# --- Utilities ---
-# For asynchronous file I/O (writing downloaded files)
 aiofiles
 
-# For loading environment variables from a .env file
+# --- Pinecone Vector Database & Reranking ---
+pinecone
+
+# --- Google AI ---
+google-generativeai
 python-dotenv
+
+# --- Document Parsing and Chunking ---
+# Installs unstructured and all its dependencies for various file types (pdf, docx, etc.)
+unstructured[all-docs]
+unstructured
+
+# --- Other Utilities ---
+# Although not explicitly imported in the final script, mimetypes is part of the standard library.
+# The following dependencies are often required by unstructured for full functionality.
+pydantic
+
+# For PDF parsing with unstructured
+pdf2image
+pytesseract
+poppler-utils
+pymupdf
