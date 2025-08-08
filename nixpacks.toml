@@ -1,17 +1,35 @@
-# nixpacks.toml
+# This file configures the Nixpacks build environment for Railway.
+# It uses the Nix package manager for maximum control over system dependencies.
+
+providers = ["python"]
 
 [phases.setup]
-# Install these with apt-get inside the build image
-aptPkgs = [
-  "libmagic-dev",
-  "poppler-utils",
-  "tesseract-ocr",       # base engine
-  "tesseract-ocr-all",   # all language packs (optional & large)
-  "libreoffice",         # full suite; use libreoffice-headless if CLI-only
-  "pandoc",
-  "libgl1",              # OpenGL runtime
-  "libglx-mesa0",         # replaces the old libgl1-mesa-glx package    
-  "libglib2.0-0",
-  "libopencv-dev",
-  "libglib2.0-0"
+# These are system-level packages installed directly from the Nix package manager.
+# This is more precise than using the default 'apt' provider.
+nixPkgs = [
+    "python311", # Using Python 3.11
+    "gcc",
+    "libGL",
+    "glib",
+    "poppler_utils", # Correct Nix package name for poppler-utils
+    "tesseract5",    # Correct Nix package name for tesseract
+    "libreoffice",
+    "pandoc"
 ]
+
+[phases.install]
+# We create a virtual environment and install dependencies into it.
+cmds = [
+    "python -m venv /opt/venv",
+    ". /opt/venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt"
+]
+
+[phases.build]
+# Make the boot script executable before using it.
+cmds = ["chmod +x ./boot.sh"]
+
+[start]
+# Use the boot.sh script to start the application.
+# This ensures library links are set up before the server runs.
+cmd = "./boot.sh uvicorn main:app --host 0.0.0.0 --port $PORT"
+
