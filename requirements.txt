@@ -27,5 +27,4 @@ opencv-python-headless
 # For PDF parsing with unstructured
 pdf2image
 pytesseract
-poppler-utils
 pymupdf
