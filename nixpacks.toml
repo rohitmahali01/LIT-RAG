@@ -1,0 +1,12 @@
+# nixpacks.toml
+
+[phases.setup]
+# A list of system packages to install using apt-get
+pkgs = [
+  "libmagic-dev",
+  "poppler-utils",
+  "tesseract-ocr",
+  "tesseract-ocr-all", # This installs all available language packs for tesseract-lang
+  "libreoffice",
+  "pandoc"
+]
