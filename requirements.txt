@@ -28,3 +28,10 @@ pdf2image
 pytesseract
 poppler-utils
 pymupdf
+
+python-magic
+python-libmagic
+python-docx
+lxml
+beautifulsoup4
+html5lib
