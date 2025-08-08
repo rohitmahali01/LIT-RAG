@@ -11,5 +11,6 @@ aptPkgs = [
   "pandoc",
   "libgl1",              # OpenGL runtime
   "libglx-mesa0",         # replaces the old libgl1-mesa-glx package    
-  "libglib2.0-0"
+  "libglib2.0-0",
+  "opencv-python-headless"
 ]
