@@ -8,5 +8,6 @@ pkgs = [
   "tesseract-ocr",
   "tesseract-ocr-all", # This installs all available language packs for tesseract-lang
   "libreoffice",
-  "pandoc"
+  "pandoc",
+  "libgl1"
 ]
