@@ -18,10 +18,11 @@ nixPkgs = [
 ]
 
 [phases.install]
-# We create a virtual environment and install dependencies into it.
+# We create a virtual environment, install dependencies, and then forcefully
+# remove the standard opencv-python package to prevent conflicts.
 cmds = [
     "python -m venv /opt/venv",
-    ". /opt/venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt"
+    ". /opt/venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt && pip uninstall -y opencv-python"
 ]
 
 [phases.build]
