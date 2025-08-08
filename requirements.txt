@@ -22,6 +22,7 @@ unstructured
 # Although not explicitly imported in the final script, mimetypes is part of the standard library.
 # The following dependencies are often required by unstructured for full functionality.
 pydantic
+opencv-python-headless
 
 # For PDF parsing with unstructured
 pdf2image
