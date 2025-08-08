@@ -10,5 +10,7 @@ aptPkgs = [
   "libreoffice",         # full suite; use libreoffice-headless if CLI-only
   "pandoc",
   "libgl1",              # OpenGL runtime
-  "libglx-mesa0"         # replaces the old libgl1-mesa-glx package
+  "libglx-mesa0",         # replaces the old libgl1-mesa-glx package
+  "libgl1-mesa-glx",    
+  "libglib2.0-0"
 ]
