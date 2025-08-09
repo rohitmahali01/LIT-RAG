@@ -251,7 +251,7 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
 
             rerank_response = await run_in_threadpool(
                 pc.inference.rerank, model=RERANK_MODEL, query=query,
-                documents=retrieved_docs[:30], top_n=10, return_documents=True
+                documents=retrieved_docs[:10], top_n=3, return_documents=True
             )
             reranked_docs_text = [result.document.text for result in rerank_response.data]
 
@@ -513,6 +513,7 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+
 
 
 
