@@ -65,12 +65,12 @@ async def startup_event():
     print("--- Server Starting Up ---")
     print("Parser Strategy: HYBRID (In-process multiprocessing for PDFs, `unstructured` for others).")
     print("Reranker: Pinecone's Cohere Reranker API.")
-    print("Generation Model: gemini-2.5-pro.")
+    print("Generation Model: gemini-2.5-flash-lite")
 
     if not os.getenv("GOOGLE_API_KEY"):
         raise ValueError("GOOGLE_API_KEY environment variable not found.")
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    models["generation_model"] = genai.GenerativeModel('gemini-2.5-pro')
+    models["generation_model"] = genai.GenerativeModel('gemini-2.5-flash-lite')
 
     global pc, pinecone_index
     pinecone_api_key = os.getenv("PINECONE_API_KEY")
@@ -513,5 +513,6 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+
 
 
