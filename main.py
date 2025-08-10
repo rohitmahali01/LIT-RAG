@@ -1,4 +1,4 @@
-nd# main.py (Version 12.1.0 - Final with Caching)
+# main.py (Version 12.1.0 - Final with Caching)
 #
 # This version introduces a caching layer. If a document has been previously
 # processed, the system skips the ingestion step and directly answers queries
@@ -528,4 +528,3 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
-
