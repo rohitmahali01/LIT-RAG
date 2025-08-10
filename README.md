@@ -1,10 +1,6 @@
-Of course. Here is a comprehensive and professionally formatted `README.md` file ready for your GitHub repository. It explains the architecture, features, setup, and usage of your code in detail.
-
----
-
 # Advanced RAG Pipeline with Caching and Hybrid Parsing
 
-![Python Version](https://img.shields.io/badge/Python-3.9+-blue.svg)![Framework](https://img.shields.io/badge/Framework-FastAPI-05998b)![License](https://img.shields.io/badge/License-MIT-green.svg)
+![Python Version](https://img.shields.io/badge/Python-3.9+-blue.svg)![Framework](https://img.shields.io/badge/Framework-FastAPI-05998b)
 
 This repository contains the source code for a high-performance, asynchronous Retrieval-Augmented Generation (RAG) API. It is built with FastAPI and leverages Google's Gemini 1.5 Flash for generation, Pinecone for vector search, and a sophisticated hybrid parsing strategy for document ingestion. The system is optimized for speed and efficiency through multiprocessing and a smart caching layer.
 
