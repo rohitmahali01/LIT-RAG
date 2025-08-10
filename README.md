@@ -76,7 +76,7 @@ Follow these instructions to set up and run the project locally.
 ### 2. Clone the Repository
 
 ```bash
-git clone <your-repository-url>
+git clone [<[your-repository-url](https://github.com/rohitmahali01/LIT-RAG)>]
 cd <repository-directory>
 ```
 
@@ -184,8 +184,4 @@ The response will be a JSON object containing a list of answers corresponding to
     "A Transformer is a network architecture based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. It has been shown to be highly effective for sequence transduction tasks like machine translation."
   ]
 }
-```
-
-## ⚖️ License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
+'''
