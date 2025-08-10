@@ -11,7 +11,7 @@ This repository contains the source code for a high-performance, asynchronous Re
 *   **High-Performance Hybrid Parsing:**
     *   **For PDFs:** Utilizes `PyMuPDF` with Python's `multiprocessing` to process pages in parallel across all available CPU cores, drastically reducing ingestion time.
     *   **For Other Formats:** Leverages the `unstructured.io` library for semantic chunking of diverse file types (DOCX, HTML, TXT, etc.).
-*   **Advanced Hybrid Search:** Combines dense vectors (from Google's `text-embedding-004`) and sparse vectors (SPLADE) to achieve superior retrieval accuracy, blending semantic meaning with keyword precision.
+*   **Advanced Hybrid Search:** Combines dense vectors (from llama text embed model`) and sparse vectors (pinecone sparse model) to achieve superior retrieval accuracy, blending semantic meaning with keyword precision.
 *   **Cohere Reranking:** Employs a reranking step to refine search results, ensuring only the most relevant context is passed to the language model.
 *   **Security-Hardened Prompting:** The generation prompt is engineered to prevent prompt injection attacks by instructing the model to treat all retrieved context strictly as data, not instructions.
 *   **Production-Ready:** Includes robust error handling, request retries with exponential backoff, and secure bearer token authentication.
@@ -51,7 +51,7 @@ graph TD
 *   **AI & NLP:**
     *   **Generation:** Google Gemini 1.5 Flash
     *   **Vector Database:** Pinecone
-    *   **Embedding Models:** Google `text-embedding-004` (Dense), SPLADE (Sparse)
+    *   **Embedding Models:** llama text embed` (Dense), Pinecone sparse english embed
     *   **Reranking:** Cohere Rerank API
 *   **Parsing:** PyMuPDF, Unstructured.io
 *   **Async & HTTP:** `asyncio`, `httpx`, `aiofiles`
