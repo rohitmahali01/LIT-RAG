@@ -28,3 +28,4 @@ opencv-python-headless
 pdf2image
 pytesseract
 pymupdf
+llama-parse
