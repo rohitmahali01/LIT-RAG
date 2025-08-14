@@ -1,6 +1,6 @@
 ###  Using the API with cURL
 
-Once the server is running, you can easily test the endpoint from your terminal using `cURL`.
+Once the server is running, you can easily test the endpoint from your terminal using `CURL`.
 
 **Replace the placeholders** (`YOUR_BEARER_TOKEN`, the document URL, and your questions) in the command below:
 
