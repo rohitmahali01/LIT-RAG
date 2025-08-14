@@ -6,7 +6,7 @@ Once the server is running, you can easily test the endpoint from your terminal 
 
 ```bash
 curl -X 'POST' \
-  'http://localhost:8000/api/v1/hackrx/run' \
+  'https://lit-rag-production.up.railway.app/' \
   -H 'accept: application/json' \
   -H 'Authorization: Bearer YOUR_BEARER_TOKEN' \
   -H 'Content-Type: application/json' \
