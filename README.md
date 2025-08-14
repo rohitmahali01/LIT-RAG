@@ -61,6 +61,33 @@ The project is organized for clarity and separation of concerns:
 ├── requirements.txt    # List of Python dependencies
 └── .env.example        # Example environment variables file
 ```
+## ⚙️ Architectural Flow
+
+The system follows an intelligent, cache-aware workflow for every request.
+
+```mermaid
+graph TD
+    A[Client Request: URL + Questions] --> B{Cache Check};
+    B -- Cache MISS --> C[Ingestion Pipeline];
+    C -- 1. Download & Parse --> D[Hybrid Parser];
+    D -- PDF --> E[PyMuPDF + Multiprocessing];
+    D -- Other --> F[Unstructured.io];
+    E --> G[Chunk Text];
+    F --> G;
+    G -- 2. Embed Chunks --> H[Create Dense & Sparse Vectors];
+    H -- 3. Index --> I[Upsert to Pinecone Namespace];
+    B -- Cache HIT --> J[Query Processing];
+    I --> J;
+
+    subgraph Query Processing
+        J -- 1. Hybrid Search --> K[Retrieve Chunks from Pinecone];
+        K -- 2. Rerank --> L[Cohere Rerank API];
+        L -- 3. Generate --> M[Gemini 1.5 Flash];
+    end
+
+    M --> N[API Response: Answers];
+    A --> N;
+```
 
 ## 🛠 How to Run the Project
 
