@@ -1,4 +1,4 @@
-# LIT RAG: Top 38 Semifinalist @ HackRx
+# LIT RAG: Top 38 Semifinalist @ HackRx 6.0 2025
 
 ![HackRx Logo](https://img.shields.io/badge/Hackathon-HackRx-blue.svg)![Status](https://img.shields.io/badge/Status-Top%2038%20Semifinalist-brightgreen.svg)![Language](https://img.shields.io/badge/Language-Python-3776AB.svg?logo=python)![Framework](https://img.shields.io/badge/Framework-FastAPI-009688.svg?logo=fastapi)![AI/ML](https://img.shields.io/badge/LLM-Gemini%201.5-F4B400.svg?logo=google)![VectorDB](https://img.shields.io/badge/Vector%20DB-Pinecone-E57300.svg?logo=pinecone)
 
