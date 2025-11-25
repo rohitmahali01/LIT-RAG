@@ -77,7 +77,7 @@ async def startup_event():
         raise ValueError("GOOGLE_API_KEY environment variable not found.")
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
     
-    models["generation_model"] = genai.GenerativeModel('gemini-1.5-flash')
+    models["generation_model"] = genai.GenerativeModel('gemini-1.5-flash-001')
     
     # Share the initialized model with the challenge module
     challenge.models = models
@@ -441,3 +441,4 @@ async def run_submission(request: SubmissionRequest):
     except Exception as e:
         print(f"An unexpected error occurred in run_submission: {e}")
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+
