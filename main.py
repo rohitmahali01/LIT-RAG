@@ -77,7 +77,7 @@ async def startup_event():
         raise ValueError("GOOGLE_API_KEY environment variable not found.")
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
     
-    models["generation_model"] = genai.GenerativeModel('gemini-1.5-flash-001')
+    models["generation_model"] = genai.GenerativeModel('gemini-2.5-flash')
     
     # Share the initialized model with the challenge module
     challenge.models = models
