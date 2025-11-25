@@ -6,26 +6,17 @@ uvicorn
 httpx
 aiofiles
 
-# --- Pinecone Vector Database & Reranking ---
+# --- Pinecone Vector Database ---
+# The generic 'pinecone' package covers the V3 client used in your code
 pinecone
 
 # --- Google AI ---
 google-generativeai
 python-dotenv
 
-# --- Document Parsing and Chunking ---
-# Installs unstructured and all its dependencies for various file types (pdf, docx, etc.)
-unstructured[all-docs]
-unstructured
-
-# --- Other Utilities ---
-# Although not explicitly imported in the final script, mimetypes is part of the standard library.
-# The following dependencies are often required by unstructured for full functionality.
-pydantic
-opencv-python-headless
-
-# For PDF parsing with unstructured
-pdf2image
-pytesseract
+# --- PDF Parsing (Lightweight Replacement) ---
+# We replaced unstructured with this single, fast library
 pymupdf
-llama-parse
+
+# --- Data Validation ---
+pydantic
