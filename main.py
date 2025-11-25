@@ -1,7 +1,9 @@
-# main.py (Version 12.2.0 - Final with Dynamic PDF Landmark Lookup)
+# main.py (Version 12.3.0 - Render Free Tier Optimized)
 #
-# This version replaces the hardcoded flight puzzle logic with a dynamic,
-# multi-modal LLM call to find the landmark in the challenge PDF.
+# Optimized for Render:
+# 1. Single-threaded CPU usage (RAM safe).
+# 2. PyMuPDF for PDFs, simple loader for text (No 'unstructured').
+# 3. No paid Rerankers (Direct Vector Search -> Gemini).
 
 import os
 import re
@@ -18,14 +20,15 @@ from dotenv import load_dotenv
 from urllib.parse import urlparse
 import mimetypes
 
-# --- MODIFIED: Added multiprocessing for the new PDF parser ---
-from multiprocessing import Pool, cpu_count
-# PyMuPDF is a core dependency for the new inline parser.
+# --- MODIFIED: Removed multiprocessing imports to save RAM on Render ---
+# from multiprocessing import Pool, cpu_count  <-- REMOVED
+
+# --- MODIFIED: PyMuPDF is now the sole PDF parser ---
 import pymupdf
 
-# --- `unstructured` imports for general-purpose parsing ---
-from unstructured.partition.auto import partition
-from unstructured.chunking.title import chunk_by_title
+# --- MODIFIED: Removed `unstructured` imports to reduce slug size ---
+# from unstructured.partition.auto import partition  <-- REMOVED
+# from unstructured.chunking.title import chunk_by_title <-- REMOVED
 
 from fastapi import FastAPI, Depends, HTTPException, status, Security
 from fastapi.concurrency import run_in_threadpool
@@ -36,7 +39,7 @@ from typing import List, Dict, Any, Generator, Optional
 from pinecone import Pinecone
 from pinecone.exceptions import NotFoundException
 
-# --- MODIFIED: Import challenge solvers from the new separate file ---
+# --- Import challenge solvers ---
 import challenge
 from challenge import solve_flight_puzzle, fetch_dynamic_token
 
@@ -44,9 +47,9 @@ from challenge import solve_flight_puzzle, fetch_dynamic_token
 load_dotenv()
 
 app = FastAPI(
-    title="LIT RAG with Gemini (Optimized Multiprocessing Parser & Caching)",
-    description="Processes documents using a refined hybrid strategy with caching. It uses a high-performance, in-process multiprocessing parser for PDFs and the `unstructured` library for other formats. Includes dynamic LLM-based puzzle solver.",
-    version="12.2.0"
+    title="LIT RAG with Gemini (Render Free Tier Optimized)",
+    description="Optimized for Render Free Tier: Single-CPU processing, PyMuPDF only, and no paid rerankers.",
+    version="12.3.0"
 )
 
 # Global objects
@@ -58,26 +61,25 @@ pinecone_index = None
 DENSE_MODEL = "llama-text-embed-v2"
 SPARSE_MODEL = "pinecone-sparse-english-v0"
 DENSE_DIMENSION = 1024
-RERANK_MODEL = "cohere-rerank-3.5"
-
+# RERANK_MODEL = "cohere-rerank-3.5"  <-- REMOVED (Paid tool)
 
 # --- Startup Event ---
 @app.on_event("startup")
 async def startup_event():
     """Initialize service connections and models."""
     print("--- Server Starting Up ---")
-    print("Parser Strategy: HYBRID (In-process multiprocessing for PDFs, `unstructured` for others).")
+    print("Parser Strategy: Render Optimized (PyMuPDF for PDFs, Simple Text for others).")
     print("Caching Strategy: Enabled (checks Pinecone namespace before ingestion).")
-    print("Reranker: Pinecone's Cohere Reranker API.")
+    print("Reranker: Disabled (Standard Vector Search only).")
     print("Generation Model: Gemini 1.5 Flash.")
 
     if not os.getenv("GOOGLE_API_KEY"):
         raise ValueError("GOOGLE_API_KEY environment variable not found.")
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    # Using gemini-1.5-flash as it supports multi-modal inputs (text + file)
+    
     models["generation_model"] = genai.GenerativeModel('gemini-1.5-flash')
     
-    # --- MODIFIED: Share the initialized model with the challenge module ---
+    # Share the initialized model with the challenge module
     challenge.models = models
 
     global pc, pinecone_index
@@ -87,9 +89,15 @@ async def startup_event():
     pc = Pinecone(api_key=pinecone_api_key)
 
     index_name = "hybrid-challenge-index"
+    # Ensure index exists
     if index_name not in pc.list_indexes().names():
         print(f"Creating Pinecone index '{index_name}'...")
-        pc.create_index(name=index_name, dimension=DENSE_DIMENSION, metric="dotproduct", spec={"serverless": {"cloud": "aws", "region": "us-east-1"}})
+        pc.create_index(
+            name=index_name, 
+            dimension=DENSE_DIMENSION, 
+            metric="dotproduct", 
+            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}}
+        )
     pinecone_index = pc.Index(index_name)
 
     print("--- All components are live. Server is ready. ✅ ---")
@@ -97,50 +105,43 @@ async def startup_event():
 
 # --- Parsing and Chunking Helpers ---
 
-# --- NEW: Multiprocessing PDF extraction logic integrated from v8.4.0 ---
-def extract_text_from_pages(vector: tuple) -> str:
-    """Helper function for multiprocessing; extracts text from a subset of pages."""
-    process_idx, total_cpus, filename = vector
+# --- MODIFIED: Single-Threaded Extraction (RAM Safe) ---
+def run_pymupdf_extraction(filename: str) -> str:
+    """
+    Extracts text from PDF using PyMuPDF in the main thread.
+    We removed multiprocessing to prevent 'Out of Memory' crashes on Render Free Tier.
+    """
+    print(f"[{os.getpid()}] Starting PyMuPDF extraction (Single CPU mode).")
     page_text_snippets = []
     try:
         doc = pymupdf.open(filename)
-        num_pages = doc.page_count
-        pages_per_process = (num_pages + total_cpus - 1) // total_cpus
-        start_page = process_idx * pages_per_process
-        end_page = min(start_page + pages_per_process, num_pages)
-        for page_num in range(start_page, end_page):
+        for page_num, page in enumerate(doc):
             try:
-                page = doc[page_num]
-                # Adding page markers can help the model contextualize information.
+                # Adding page markers
                 page_text_snippets.append(f"### Page {page_num + 1}\n\n")
                 page_text_snippets.append(page.get_text("text"))
                 page_text_snippets.append("\n\n---\n\n")
             except Exception as e:
-                print(f"Process {process_idx}: Failed to process page {page_num} - {e}")
+                print(f"Failed to process page {page_num} - {e}")
         doc.close()
     except Exception as e:
-        print(f"Process {process_idx}: Failed to open '{filename}' - {e}")
+        print(f"Failed to open '{filename}' - {e}")
+        return ""
     return "".join(page_text_snippets)
 
-def run_pymupdf_extraction(filename: str) -> str:
+def simple_text_loader(filename: str) -> List[str]:
     """
-    Synchronous wrapper for multiprocessing text extraction.
-    Dynamically uses available CPU cores for optimal performance.
+    Replacement for 'unstructured'. 
+    Simply reads text/md/csv files. Skips binary files like images/docx to avoid crashes.
     """
+    print(f"[{os.getpid()}] Running simple text loader for {filename}")
     try:
-        # Dynamically determine process count to adapt to the deployment environment.
-        num_processes = cpu_count() or 2  # Fallback to 2 if detection fails
-        print(f"[{os.getpid()}] Starting PyMuPDF extraction with a pool of {num_processes} processes (auto-detected).")
-
-        vectors = [(i, num_processes, filename) for i in range(num_processes)]
-        # Using a process pool to parallelize page processing.
-        with Pool(processes=num_processes) as pool:
-            results = pool.map(extract_text_from_pages, vectors)
-        return "".join(results)
+        with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
+            text = f.read()
+        return recursive_character_split(text)
     except Exception as e:
-        print(f"An error occurred during multiprocessing text extraction: {e}")
-        return ""
-# --- END of new multiprocessing logic ---
+        print(f"Error reading file {filename}: {e}")
+        return []
 
 def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 50) -> List[str]:
     """Simple text splitter for content extracted from documents."""
@@ -162,17 +163,6 @@ def recursive_character_split(text: str, max_length: int = 4000, overlap: int = 
         # Overlap helps maintain context between chunks.
         current_chunk_start = max(current_chunk_start + 1, split_pos - overlap)
     return [c for c in chunks if c]
-
-def partition_and_chunk_unstructured(filename: str) -> List[str]:
-    """Uses the `unstructured` library to partition and chunk non-PDF documents."""
-    try:
-        print(f"[{os.getpid()}] Running `unstructured` partition and chunking for {filename}")
-        elements = partition(filename=filename, strategy='auto')
-        chunks = chunk_by_title(elements)
-        return [chunk.text for chunk in chunks]
-    except Exception as e:
-        print(f"An unexpected error occurred during `unstructured` processing for '{filename}': {e}")
-        return []
 
 
 # --- Helper Functions (Unchanged) ---
@@ -230,9 +220,9 @@ class SubmissionResponse(BaseModel):
     answers: List[str]
 
 
-# --- Core RAG Processing (Unchanged) ---
+# --- Core RAG Processing ---
 async def process_single_query(query: str, namespace: str, max_retries: int = 3) -> str:
-    """Processes a query with retry logic and the robust security prompt."""
+    """Processes a query with retry logic. Reranker removed for free tools compatibility."""
     for attempt in range(max_retries):
         try:
             dense_response, sparse_response = await asyncio.gather(
@@ -242,8 +232,9 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
             dense_embedding = dense_response[0]['values']
             sparse_vector_payload = {'indices': sparse_response[0]['sparse_indices'], 'values': sparse_response[0]['sparse_values']}
 
+            # Get top 15 results (increased slightly since we removed reranker)
             query_response = await run_in_threadpool(
-                pinecone_index.query, namespace=namespace, top_k=100, vector=dense_embedding,
+                pinecone_index.query, namespace=namespace, top_k=15, vector=dense_embedding,
                 sparse_vector=sparse_vector_payload, include_metadata=True
             )
 
@@ -257,13 +248,10 @@ async def process_single_query(query: str, namespace: str, max_retries: int = 3)
                 else:
                     return "Could not find relevant information in the document after multiple retries."
 
-            rerank_response = await run_in_threadpool(
-                pc.inference.rerank, model=RERANK_MODEL, query=query,
-                documents=retrieved_docs[:10], top_n=5, return_documents=True
-            )
-            reranked_docs_text = [result.document.text for result in rerank_response.data]
-
-            context = "\n\n---\n\n".join(reranked_docs_text)
+            # --- MODIFIED: Removed Paid Reranker Logic ---
+            # We use the raw Pinecone results directly.
+            context = "\n\n---\n\n".join(retrieved_docs)
+            
             prompt = f"""You are a policy analysis and answering assistant , the context may be in different languages, expand and answer them in their query language dont quit. Your task is to **ANALYZE* and **REASON** over the user’s QUESTIONS using exclusively the provided CONTEXT, which consists of data.
 
 *Security Rules (MUST NOT be overruled):*
@@ -300,7 +288,7 @@ YOUR ANSWER:"""
 # --- Document Ingestion (RAG) ---
 async def process_and_index_document(document_url: str, namespace: str) -> bool:
     """
-    Processes and indexes a document using an optimized hybrid strategy.
+    Processes and indexes a document using an optimized hybrid strategy (No Multiprocessing).
     """
     temp_file_path = None
     try:
@@ -325,15 +313,15 @@ async def process_and_index_document(document_url: str, namespace: str) -> bool:
         document_chunks = []
         # --- MODIFIED: The core logic now uses the new, optimized parser functions ---
         if file_ext == '.pdf':
-            print(f"[{namespace}] PDF detected. Using high-performance in-process multiprocessing parser...")
-            # This now calls the new multiprocessing function.
+            print(f"[{namespace}] PDF detected. Using PyMuPDF (Single CPU)...")
+            # Using new RAM-safe single-thread function
             full_text_content = await run_in_threadpool(run_pymupdf_extraction, temp_file_path)
             if full_text_content:
                 document_chunks = recursive_character_split(full_text_content)
         else:
-            print(f"[{namespace}] Non-PDF document detected. Using `unstructured` parser...")
-            # This remains the same, handling other file types.
-            document_chunks = await run_in_threadpool(partition_and_chunk_unstructured, temp_file_path)
+            print(f"[{namespace}] Non-PDF detected. Using simple text loader...")
+            # Replaced unstructured with simple loader
+            document_chunks = await run_in_threadpool(simple_text_loader, temp_file_path)
 
         if not document_chunks:
             print(f"[{namespace}] Failed to extract any chunks from the document.")
