@@ -1,0 +1,31 @@
+# --- Core Application Framework ---
+fastapi
+uvicorn
+
+# --- Asynchronous Services ---
+httpx
+aiofiles
+
+# --- Pinecone Vector Database & Reranking ---
+pinecone
+
+# --- Google AI ---
+google-generativeai
+python-dotenv
+
+# --- Document Parsing and Chunking ---
+# Installs unstructured and all its dependencies for various file types (pdf, docx, etc.)
+unstructured[all-docs]
+unstructured
+
+# --- Other Utilities ---
+# Although not explicitly imported in the final script, mimetypes is part of the standard library.
+# The following dependencies are often required by unstructured for full functionality.
+pydantic
+opencv-python-headless
+
+# For PDF parsing with unstructured
+pdf2image
+pytesseract
+pymupdf
+llama-parse
