@@ -6,17 +6,18 @@ uvicorn
 httpx
 aiofiles
 
-# --- Pinecone Vector Database ---
-# The generic 'pinecone' package covers the V3 client used in your code
+# --- Pinecone ---
 pinecone
 
-# --- Google AI ---
-google-generativeai
+# --- Google AI (Updated to fix 404 error) ---
+google-generativeai>=0.8.0
 python-dotenv
 
-# --- PDF Parsing (Lightweight Replacement) ---
-# We replaced unstructured with this single, fast library
+# --- PDF Parsing ---
 pymupdf
 
 # --- Data Validation ---
 pydantic
+
+# --- DOCX Parsing (Added) ---
+python-docx
